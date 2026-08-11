@@ -1595,6 +1595,9 @@
       <button class="ads-btn" onclick="ventasCargarDrive()">Actualizar de Drive</button>
       <button class="ads-btn" onclick="ventasCargarFichero()">Cargar cuadrante</button>
       <button class="ads-btn" onclick="planExportJSON()">Exportar todo</button>
+      <button class="ads-btn ads-btn-lime" onclick="planGuardarDrive()">Guardar plan en Drive</button>
+      <button class="ads-btn" onclick="planCargarDrive()">Cargar plan de Drive</button>
+      <span class="drive-status" id="plan-drive-status"></span>
       <button class="ads-btn ads-btn-dark" onclick="cerrarAds()">&#8592; Volver</button>
     </div>
   </div>
@@ -4466,23 +4469,14 @@ function planFicheroElegido(ev) {
   var lector = new FileReader();
   lector.onload = function () {
     try {
-      var d = JSON.parse(lector.result);
-      var camps = d.campanas || d;
-      if (!camps || typeof camps !== 'object') throw new Error('sin campañas');
-      Object.keys(camps).forEach(function (n) {
-        planState.campanas[n] = camps[n];
-        if (planState.extra.indexOf(n) === -1 && !adsResultados(n)) planState.extra.push(n);
-      });
-      if (Array.isArray(d.archivo)) planState.archivo = d.archivo;
-      if (d.emails) planState.emails = d.emails;
-      planGuardar(); planRender(); archRender(); adsRender();
-      alert(Object.keys(camps).length + ' campaña(s) importadas.');
+      var n = planAplicarImportado(JSON.parse(lector.result));
+      alert(n + ' campaña(s) importadas.');
     } catch (e) { alert('Ese fichero no tiene el formato del plan.'); }
     ev.target.value = '';
   };
   lector.readAsText(f);
 }
-function planExportJSON() {
+function planDatosExport() {
   var data = { modulo:'panel_campanas', fecha_export: adsHoyISO(), campanas:{}, archivo: planState.archivo, emails: planState.emails };
   planListaCampanas().forEach(function (n) {
     var c = planCampana(n), res = adsResultados(n), g = planGasto(n);
@@ -4493,6 +4487,103 @@ function planExportJSON() {
       resultados: res ? { uds:res.uds, importe:Math.round(res.venta), beneficio:Math.round(res.benef) } : null
     };
   });
+  return data;
+}
+// ================================================================
+// PLAN EN DRIVE  (usa el driveGetToken ya existente del panel)
+// ================================================================
+var PLAN_DRIVE_FOLDER = '1yQQR6g5vnIuMx8Au5U-ddPE6EQ7NncHn';   // carpeta "Panel Campanas"
+var PLAN_DRIVE_NAME   = 'panel-campanas-estado.json';
+
+function planDriveStatus(msg, cls) {
+  var el = document.getElementById('plan-drive-status');
+  if (el) { el.textContent = msg || ''; el.className = 'drive-status' + (cls ? ' ' + cls : ''); }
+}
+
+// Aplica un objeto de plan al panel. Devuelve cuantas campanas ha metido.
+function planAplicarImportado(d) {
+  var camps = d.campanas || d;
+  if (!camps || typeof camps !== 'object') throw new Error('sin campañas');
+  Object.keys(camps).forEach(function (n) {
+    planState.campanas[n] = camps[n];
+    if (planState.extra.indexOf(n) === -1 && !adsResultados(n)) planState.extra.push(n);
+  });
+  if (Array.isArray(d.archivo)) planState.archivo = d.archivo;
+  if (d.emails) planState.emails = d.emails;
+  planGuardar(); planRender(); archRender(); adsRender();
+  return Object.keys(camps).length;
+}
+
+function planBuscarEnDrive(token) {
+  var q = "'" + PLAN_DRIVE_FOLDER + "' in parents and name='" + PLAN_DRIVE_NAME + "' and trashed=false";
+  return fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) +
+               '&fields=files(id,modifiedTime)',
+               { headers: { Authorization: 'Bearer ' + token } })
+    .then(function (r) { return r.json(); })
+    .then(function (d) { return (d.files && d.files.length) ? d.files[0] : null; });
+}
+
+function planGuardarDrive() {
+  planDriveStatus('Guardando...', '');
+  driveGetToken(function (token) {
+    var jsonStr = JSON.stringify(planDatosExport(), null, 2);
+    planBuscarEnDrive(token).then(function (f) {
+      if (f) {
+        return fetch('https://www.googleapis.com/upload/drive/v3/files/' + f.id + '?uploadType=media',
+          { method: 'PATCH',
+            headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+            body: jsonStr });
+      }
+      var b = 'bikephy_plan_boundary';
+      var meta = JSON.stringify({ name: PLAN_DRIVE_NAME, parents: [PLAN_DRIVE_FOLDER], mimeType: 'application/json' });
+      var body = '--' + b + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + meta +
+                 '\r\n--' + b + '\r\nContent-Type: application/json\r\n\r\n' + jsonStr +
+                 '\r\n--' + b + '--';
+      return fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+        { method: 'POST',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'multipart/related; boundary=' + b },
+          body: body });
+    })
+    .then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      planDriveStatus('Plan guardado en Drive · ' + new Date().toLocaleTimeString('es-ES'), 'ok');
+    })
+    .catch(function (e) {
+      planDriveStatus('Error al guardar el plan', 'err');
+      alert('No he podido guardar el plan en Drive: ' + e.message);
+    });
+  });
+}
+
+function planCargarDrive() {
+  planDriveStatus('Cargando...', '');
+  driveGetToken(function (token) {
+    planBuscarEnDrive(token).then(function (f) {
+      if (!f) { planDriveStatus('No hay plan guardado en Drive', 'err'); return null; }
+      return fetch('https://www.googleapis.com/drive/v3/files/' + f.id + '?alt=media',
+                   { headers: { Authorization: 'Bearer ' + token } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var n = Object.keys(d.campanas || {}).length;
+          if (!confirm('Vas a cargar ' + n + ' campaña(s) del plan guardado en Drive.\n' +
+                       'Guardado: ' + new Date(f.modifiedTime).toLocaleString('es-ES') + '\n\n' +
+                       'Esto reemplaza lo que tengas ahora en el panel. ¿Sigo?')) {
+            planDriveStatus('Cancelado', ''); return null;
+          }
+          planAplicarImportado(d);
+          planDriveStatus('Plan cargado de Drive · ' + (d.fecha_export || ''), 'ok');
+          return true;
+        });
+    })
+    .catch(function (e) {
+      planDriveStatus('Error al cargar el plan', 'err');
+      alert('No he podido leer el plan de Drive: ' + e.message);
+    });
+  });
+}
+
+function planExportJSON() {
+  var data = planDatosExport();
   downloadFile('panel-campanas-' + data.fecha_export + '.json', JSON.stringify(data, null, 2));
 }
 
