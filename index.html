@@ -1571,6 +1571,10 @@
   .plan-tarea-fila { display:flex; gap:12px; align-items:flex-start; padding:11px 20px; border-bottom:1px solid #F2F2ED; }
   .plan-tarea-fila:last-child { border-bottom:none; }
   .plan-tarea-txt { flex:1; font-size:13px; color:#222; line-height:1.45; }
+  .plan-fila .plan-sel.camp { flex:0 0 200px; }
+  .plan-pers-fila.vencida .plan-inp.fecha { border-color:#A32B2B; color:#A32B2B; }
+  .plan-pers-nueva { margin-top:10px; padding-top:10px; border-top:1px dashed #E0E0DA; }
+  .plan-chip.recurso-tag { flex:0 0 128px; box-sizing:border-box; text-align:center; }
   .plan-tarea-camp { font-size:11px; color:#999; margin-top:3px; }
   .plan-tarea-plazo { font-size:11px; color:#888; font-family:var(--font-mono); flex:0 0 86px; text-align:right; }
   .plan-inv { display:flex; gap:18px; flex-wrap:wrap; background:#FAFAF7; border-radius:8px; padding:12px 14px; margin-bottom:12px; }
@@ -3982,10 +3986,10 @@ function planPorPersona() {
       var p = t.persona || 'Sin asignar';
       (m[p] = m[p] || []).push({ campana:nombre, idx:i, texto:t.tarea, plazo:t.plazo, estado:t.estado, tipo:'Tarea' });
     });
-    (c.recursos||[]).forEach(function (r) {
+    (c.recursos||[]).forEach(function (r, i) {
       if (!r.que) return;
       var p = r.quien || 'Sin asignar';
-      (m[p] = m[p] || []).push({ campana:nombre, idx:-1, texto:r.que, plazo:'', estado:r.estado, tipo:'Recurso' });
+      (m[p] = m[p] || []).push({ campana:nombre, idx:i, texto:r.que, plazo:'', estado:r.estado, tipo:'Recurso' });
     });
   });
   var orden = ['pendiente','en_curso','hecho','conseguido'];
@@ -4335,38 +4339,110 @@ function planRenderCards() {
 }
 
 // ---------- PERSONAS ----------
+// Las tareas siguen viviendo en la campaña (fuente única). Desde aquí se
+// editan los mismos datos que en la pestaña Campañas: texto, persona,
+// campaña, plazo, estado, añadir y borrar.
+var planPersNueva = {};
+function planPersCampanasOpts(actual) {
+  var html = '', vistas = {};
+  planListaCampanas().forEach(function (n) {
+    if (planEstado(n) === 'finalizada' && n !== actual) return;
+    vistas[n] = true;
+    html += planOpt(escapeHtml(n), escapeHtml(n), actual === n ? escapeHtml(n) : null);
+  });
+  return html;
+}
+function planPersCampanaDefecto() {
+  var l = planListaCampanas().filter(function (n) { return planEstado(n) !== 'finalizada'; });
+  return l.indexOf('TAREAS FUERA DE CAMPAÑAS') > -1 ? 'TAREAS FUERA DE CAMPAÑAS' : (l[0] || '');
+}
+function planPersSetTarea(n, i, campo, v) { planSetTarea(n, i, campo, v); }
+function planPersSetTareaR(n, i, campo, v) { planSetTarea(n, i, campo, v); planRender(); }
+function planPersMoverTarea(origen, i, destino) {
+  if (!destino || destino === origen) return;
+  var t = planCampana(origen).tareas.splice(i, 1)[0];
+  if (!t) return;
+  planCampana(destino).tareas.push(t);
+  planGuardar(); planRender();
+}
+function planPersMoverRecurso(origen, i, destino) {
+  if (!destino || destino === origen) return;
+  var r = planCampana(origen).recursos.splice(i, 1)[0];
+  if (!r) return;
+  planCampana(destino).recursos.push(r);
+  planGuardar(); planRender();
+}
+function planPersBorrarTarea(n, i) {
+  var t = planCampana(n).tareas[i];
+  if (!t || !confirm('Eliminar la tarea "' + t.tarea + '"?')) return;
+  planDelTarea(n, i);
+}
+function planPersBorrarRecurso(n, i) {
+  var r = planCampana(n).recursos[i];
+  if (!r || !confirm('Eliminar el recurso "' + r.que + '"?')) return;
+  planDelRecurso(n, i);
+}
+function planPersSetRecurso(n, i, campo, v) { planSetRecurso(n, i, campo, v); }
+function planPersSetRecursoR(n, i, campo, v) { planSetRecurso(n, i, campo, v); planRender(); }
+function planPersNuevaSet(p, campo, v) { (planPersNueva[p] = planPersNueva[p] || {})[campo] = v; }
+function planPersAddTarea(p) {
+  var d = planPersNueva[p] || {};
+  var campana = d.campana || planPersCampanaDefecto();
+  var texto = (d.tarea || '').trim();
+  if (!texto) { alert('Escribe qué tiene que hacer.'); return; }
+  if (!campana) { alert('Elige la campaña.'); return; }
+  planCampana(campana).tareas.push({ persona: p === 'Sin asignar' ? '' : p, tarea: texto, plazo: d.plazo || '', estado: 'pendiente' });
+  planPersNueva[p] = { campana: campana };
+  planGuardar(); planRender();
+}
 function planRenderPersonas() {
   var m = planPorPersona();
-  var orden = PLAN_PERSONAS.concat(['Sin asignar']).filter(function (p) { return m[p] && m[p].length; });
+  var orden = PLAN_PERSONAS.slice();
+  if (m['Sin asignar'] && m['Sin asignar'].length) orden.push('Sin asignar');
   Object.keys(m).forEach(function (p) { if (orden.indexOf(p) === -1) orden.push(p); });
-  var html = '';
+  var html = '', hoy = adsHoyISO();
   orden.forEach(function (p) {
-    var l = m[p], ab = planAbiertas(l).length, vn = planVencidas(l).length;
+    var l = m[p] || [], ab = planAbiertas(l).length, vn = planVencidas(l).length, pe = planEsc(p);
     html += '<div class="plan-card"><div class="plan-pers-head"><div>' +
       '<div class="plan-pers-nombre">' + escapeHtml(p) +
       (PLAN_EXTERNAS.indexOf(p) > -1 ? ' <span class="plan-chip externa">Externa</span>' : '') + '</div>' +
       '<div style="font-size:12px;color:#777;margin-top:2px">' + ab + ' pendiente(s) de ' + l.length +
       (vn ? ' · <strong style="color:#A32B2B">' + vn + ' fuera de plazo</strong>' : '') + '</div></div>';
-    if (p !== 'Sin asignar') html += '<button class="ads-btn ads-btn-lime" onclick="planPrepararEmail(\'' + planEsc(p) + '\')">Preparar email</button>';
-    html += '</div>';
-    var hoy = adsHoyISO();
+    if (p !== 'Sin asignar') html += '<button class="ads-btn ads-btn-lime" onclick="planPrepararEmail(\'' + pe + '\')">Preparar email</button>';
+    html += '</div><div style="padding:12px 20px 4px">';
+    if (!l.length) html += '<div class="plan-vacio">Sin tareas.</div>';
     l.forEach(function (x) {
-      var venc = x.plazo && x.plazo < hoy && x.estado !== 'hecho' && x.estado !== 'conseguido';
-      html += '<div class="plan-tarea-fila"><div class="plan-tarea-txt">' + escapeHtml(x.texto) +
-        '<div class="plan-tarea-camp">' + x.tipo + ' · ' + escapeHtml(x.campana) + '</div></div>' +
-        '<div class="plan-tarea-plazo">' + (venc ? '<span class="plan-chip vencido">' + adsFechaCorta(x.plazo) + '</span>' : adsFechaCorta(x.plazo)) + '</div>';
+      var ce = planEsc(x.campana), venc = x.plazo && x.plazo < hoy && x.estado !== 'hecho' && x.estado !== 'conseguido';
+      html += '<div class="plan-fila plan-pers-fila' + (venc ? ' vencida' : '') + '">';
       if (x.tipo === 'Tarea') {
-        html += '<div><select class="plan-sel corto" onchange="planEstadoTarea(\'' + planEsc(x.campana) + '\',' + x.idx + ',this.value)">' +
-          planOpt('pendiente','Pendiente',x.estado) + planOpt('en_curso','En curso',x.estado) + planOpt('hecho','Hecho',x.estado) + '</select></div>';
+        html += '<input type="text" class="plan-inp" value="' + escapeHtml(x.texto) + '" placeholder="Qué tiene que hacer" oninput="planPersSetTarea(\'' + ce + '\',' + x.idx + ',\'tarea\',this.value)">' +
+          '<select class="plan-sel" title="Persona" onchange="planPersSetTareaR(\'' + ce + '\',' + x.idx + ',\'persona\',this.value)">' + planPersonaOpts(p === 'Sin asignar' ? '' : p) + '</select>' +
+          '<select class="plan-sel camp" title="Campaña" onchange="planPersMoverTarea(\'' + ce + '\',' + x.idx + ',this.value)">' + planPersCampanasOpts(x.campana) + '</select>' +
+          '<input type="date" class="plan-inp fecha" title="Plazo" value="' + escapeHtml(x.plazo||'') + '" onchange="planPersSetTareaR(\'' + ce + '\',' + x.idx + ',\'plazo\',this.value)">' +
+          '<select class="plan-sel corto" onchange="planPersSetTareaR(\'' + ce + '\',' + x.idx + ',\'estado\',this.value)">' +
+          planOpt('pendiente','Pendiente',x.estado) + planOpt('en_curso','En curso',x.estado) + planOpt('hecho','Hecho',x.estado) + '</select>' +
+          '<button class="plan-del" title="Eliminar" onclick="planPersBorrarTarea(\'' + ce + '\',' + x.idx + ')">&times;</button>';
       } else {
-        html += '<div><span class="plan-chip ' + x.estado + '">' + x.estado + '</span></div>';
+        html += '<input type="text" class="plan-inp" value="' + escapeHtml(x.texto) + '" placeholder="Qué hace falta" oninput="planPersSetRecurso(\'' + ce + '\',' + x.idx + ',\'que\',this.value)">' +
+          '<select class="plan-sel" title="Persona" onchange="planPersSetRecursoR(\'' + ce + '\',' + x.idx + ',\'quien\',this.value)">' + planPersonaOpts(p === 'Sin asignar' ? '' : p) + '</select>' +
+          '<select class="plan-sel camp" title="Campaña" onchange="planPersMoverRecurso(\'' + ce + '\',' + x.idx + ',this.value)">' + planPersCampanasOpts(x.campana) + '</select>' +
+          '<span class="plan-chip recurso-tag">Recurso</span>' +
+          '<select class="plan-sel corto" onchange="planPersSetRecursoR(\'' + ce + '\',' + x.idx + ',\'estado\',this.value)">' +
+          planOpt('pendiente','Pendiente',x.estado) + planOpt('conseguido','Conseguido',x.estado) + '</select>' +
+          '<button class="plan-del" title="Eliminar" onclick="planPersBorrarRecurso(\'' + ce + '\',' + x.idx + ')">&times;</button>';
       }
       html += '</div>';
     });
-    html += '</div>';
+    var d = planPersNueva[p] || {};
+    var campDef = d.campana || planPersCampanaDefecto();
+    html += '<div class="plan-fila plan-pers-nueva">' +
+      '<input type="text" class="plan-inp" placeholder="Nueva tarea para ' + escapeHtml(p) + '" value="' + escapeHtml(d.tarea||'') + '" oninput="planPersNuevaSet(\'' + pe + '\',\'tarea\',this.value)" onkeydown="if(event.key===\'Enter\')planPersAddTarea(\'' + pe + '\')">' +
+      '<select class="plan-sel camp" title="Campaña" onchange="planPersNuevaSet(\'' + pe + '\',\'campana\',this.value)">' + planPersCampanasOpts(campDef) + '</select>' +
+      '<input type="date" class="plan-inp fecha" title="Plazo" value="' + escapeHtml(d.plazo||'') + '" onchange="planPersNuevaSet(\'' + pe + '\',\'plazo\',this.value)">' +
+      '<button class="plan-add" onclick="planPersAddTarea(\'' + pe + '\')">+ Añadir tarea</button></div>';
+    html += '</div></div>';
   });
-  document.getElementById('plan-personas').innerHTML = html ||
-    '<div class="grupo-card-box" style="text-align:center;color:#999;font-style:italic;padding:30px">Todavía no hay tareas ni recursos anotados.</div>';
+  document.getElementById('plan-personas').innerHTML = html;
 }
 
 function planRender() {
